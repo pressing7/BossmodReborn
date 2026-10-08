@@ -1,0 +1,115 @@
+name: Korean Build and Release
+
+'on':
+  push:
+    branches: [Korean]
+    paths-ignore: ['**/*.md']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to the Dalamud repository after a successful build'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: korean-build-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'pressing7/BossmodReborn' && github.ref == 'refs/heads/Korean'
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.prepare.outputs.version }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # The project targets net10.0, but [with(...)] needs a C# 15 compiler.
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
+
+      - name: Prepare separate KR identity and version
+        id: prepare
+        run: |
+          python tools/korean_release.py prepare
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download Dalamud reference libraries
+        env:
+          DALAMUD_DISTRIB_URL: ${{ vars.DALAMUD_DISTRIB_URL || 'https://goatcorp.github.io/dalamud-distrib/latest.zip' }}
+        run: |
+          $uri = [uri]$env:DALAMUD_DISTRIB_URL
+          if ($uri.Scheme -ne 'https') { throw 'DALAMUD_DISTRIB_URL must use HTTPS.' }
+          $archive = Join-Path $env:RUNNER_TEMP 'dalamud-libraries.zip'
+          $destination = Join-Path $env:APPDATA 'XIVLauncher\addon\Hooks\dev'
+          Invoke-WebRequest -Uri $uri -OutFile $archive
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          Expand-Archive -Force $archive -DestinationPath $destination
+          if (!(Test-Path (Join-Path $destination 'Dalamud.dll'))) {
+            throw 'The archive must contain Dalamud.dll at its root.'
+          }
+
+      - name: Build plugin
+        env:
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
+        run: |
+          dotnet restore BossMod/BossModReborn.csproj
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build BossMod/BossModReborn.csproj --no-restore -c Release --output ./build "-p:Version=$env:RELEASE_VERSION" "-p:AssemblyVersion=$env:RELEASE_VERSION" "-p:FileVersion=$env:RELEASE_VERSION" "-p:InformationalVersion=$env:RELEASE_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $assemblyPath = (Resolve-Path 'build/BossModRebornKR.dll').Path
+          $identity = [System.Reflection.AssemblyName]::GetAssemblyName($assemblyPath)
+          if ($identity.Name -ne 'BossModRebornKR' -or $identity.Version.ToString() -ne $env:RELEASE_VERSION) {
+            throw 'Built assembly name/version does not match the release.'
+          }
+          python tools/korean_release.py package --version $env:RELEASE_VERSION
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Save install package and repository entry
+        uses: actions/upload-artifact@v4
+        with:
+          name: Korean-package
+          path: release-output/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: Korean-package
+          path: release-output
+      - name: Publish release, then update dist/pluginmaster.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: python tools/korean_release.py publish --version "$RELEASE_VERSION"
