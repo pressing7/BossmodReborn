@@ -1,0 +1,37 @@
+[
+  {
+    "Author": "The Combat Reborn Team; pressing7 (KR modifications)",
+    "Name": "BossMod Reborn KR",
+    "InternalName": "BossModRebornKR",
+    "AssemblyVersion": "1.0.3.1",
+    "Description": "A bunch of utilities to simplify boss mechanics",
+    "ApplicableVersion": "any",
+    "RepoUrl": "https://github.com/pressing7/BossmodReborn",
+    "Tags": [
+      "combat",
+      "boss",
+      "dodge",
+      "mechanics",
+      "pve",
+      "raids",
+      "trials"
+    ],
+    "DalamudApiLevel": 15,
+    "LoadRequiredState": 0,
+    "LoadSync": false,
+    "CanUnloadAsync": false,
+    "LoadPriority": 0,
+    "ImageUrls": [
+      "https://raw.githubusercontent.com/FFXIV-CombatReborn/BossmodReborn/master/Data/image1.png",
+      "https://raw.githubusercontent.com/FFXIV-CombatReborn/BossmodReborn/master/Data/image2.png",
+      "https://raw.githubusercontent.com/FFXIV-CombatReborn/BossmodReborn/master/Data/image3.png"
+    ],
+    "IconUrl": "https://raw.githubusercontent.com/FFXIV-CombatReborn/RebornAssets/main/IconAssets/BMR_Icon.png",
+    "Punchline": "pressing7's custom DMU strategy build",
+    "AcceptsFeedback": false,
+    "DownloadLinkInstall": "https://github.com/pressing7/BossmodReborn/releases/download/kr-1.0.3.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/pressing7/BossmodReborn/releases/download/kr-1.0.3.1/latest.zip",
+    "LastUpdate": "1791480956",
+    "Changelog": "KR build 1.0.3.1; source 70ee0df9ab7c268d52a787b794245fc9aaaca735"
+  }
+]
