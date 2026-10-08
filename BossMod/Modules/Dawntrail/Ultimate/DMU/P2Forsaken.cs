@@ -1,4 +1,4 @@
-﻿namespace BossMod.Dawntrail.Ultimate.DMU;
+namespace BossMod.Dawntrail.Ultimate.DMU;
 
 // Used for displaying the casts after they have locked in
 sealed class AllThingsEndingCasts(BossModule module) : Components.SimpleAOEGroups(module, [(uint)AID.AllThingsEnding, (uint)AID.AllThingsEnding1], new AOEShapeCone(100f, 90f.Degrees()));
@@ -9,8 +9,8 @@ sealed class AllThingsEnding(BossModule module) : Components.GenericBaitAway(mod
 {
     private enum BaitType { None, Far, Close }
     private BaitType currentBait = BaitType.None;
-    private readonly List<Actor> clones = [with(4)]; // Also includes the boss since he will cast the same spell
-    private readonly List<Actor> baiters = [with(4)]; // players currently baiting
+    private readonly List<Actor> clones = new(4); // Also includes the boss since he will cast the same spell
+    private readonly List<Actor> baiters = new(4); // players currently baiting
     private WPos? lastKnownTowerMidPoint = null;
     public bool aoesLocked = true; // Used to prevent the aoes baits constantly showing
     private readonly AOEShapeCone cone = new(25f, 90f.Degrees());
@@ -48,6 +48,14 @@ sealed class AllThingsEnding(BossModule module) : Components.GenericBaitAway(mod
     {
         CurrentBaits.Clear();
         baiters.Clear();
+
+        if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex &&
+            shapes?.currentTowerSet == 8 && towers != null && towers.Towers.Count == 2)
+        {
+            var a = towers.Towers[0].Position;
+            var b = towers.Towers[1].Position;
+            lastKnownTowerMidPoint = new WPos((a.X + b.X) * 0.5f, (a.Z + b.Z) * 0.5f);
+        }
 
         if (aoesLocked)
         {
@@ -132,7 +140,10 @@ sealed class AllThingsEnding(BossModule module) : Components.GenericBaitAway(mod
             {
                 if (lastKnownTowerMidPoint != null)
                 {
-                    BaitSafeSpot(lastKnownTowerMidPoint.Value);
+                    // After tower 8 both Past and Future use the same southern spot.
+                    var finalMidpoint = lastKnownTowerMidPoint.Value;
+                    var south = (finalMidpoint - Arena.Center).Normalized();
+                    Arena.ZoneCircleOutline(finalMidpoint + south * 2.0f, 1.0f, Colors.Safe, 2.0f);
                 }
             }
             return;

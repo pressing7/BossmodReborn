@@ -141,6 +141,7 @@ sealed class ForsakenShapes(BossModule module) : BossComponent(module)
             if (slot >= 0)
             {
                 shapes[slot] = shape;
+                korean.ObserveIcon(slot, shape);
             }
         }
     }
@@ -155,6 +156,12 @@ sealed class ForsakenShapes(BossModule module) : BossComponent(module)
         var slots = partyConfig.SlotsPerAssignment(Raid);
         if (slots.Length == 0)
         {
+            return;
+        }
+
+        if (UseKorean)
+        {
+            UpdateKorean(slots);
             return;
         }
 
@@ -325,115 +332,120 @@ sealed class ForsakenShapes(BossModule module) : BossComponent(module)
                 }
             }
 
-            if (pair.role == TowerRole.Taker && dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
+
+        }
+    }
+
+    // Kept in ForsakenShapes (which survives all eight rounds), never in a solver.
+    private readonly ForsakenKoreanAssignments korean = new();
+    public static bool UseKorean => dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex;
+
+    private void UpdateKorean(int[] slots)
+    {
+        if (!korean.Initialize(slots))
+            return;
+        pairsLocked = true;
+        korean.Advance(currentTowerSet);
+        if (currentTowerSet < 1 || currentTowerSet > 8)
+            return;
+
+        var group = ForsakenKoreanAssignments.ActiveGroup(currentTowerSet);
+        foreach (var pair in pairs)
+            pair.role = korean.Group(slots[(int)pair.player1Assignment]) == group ? TowerRole.Taker : TowerRole.Helper;
+
+        var record = korean.Record(currentTowerSet);
+        for (var slot = 0; slot < 8; ++slot)
+        {
+            if (korean.Group(slot) != group)
             {
-                // First set of towers (tower set odd)
-                if ((currentTowerSet & 1) != 0)
-                {
-                    // Cones and spreads are forced, where cone is always SW and spread is always SE
-                    if (shapeA == Shape.Cone)
-                    {
-                        swSoakers.Set(slotPlayer1);
-                    }
-
-                    if (shapeB == Shape.Cone)
-                    {
-                        swSoakers.Set(slotPlayer2);
-                    }
-
-                    if (shapeA == Shape.Spread)
-                    {
-                        seSoakers.Set(slotPlayer1);
-                    }
-
-                    if (shapeB == Shape.Spread)
-                    {
-                        seSoakers.Set(slotPlayer2);
-                    }
-
-                    // If the pairs have the same shape, an adjustment is needed
-                    if (shapeA == shapeB)
-                    {
-                        // If supports are the same shape, MT/OT has to go to the SE tower
-                        if (pair.isSupport)
-                        {
-                            seSoakers.Set(slotPlayer1);
-                            swSoakers.Set(slotPlayer2);
-                        }
-
-                        // If dps are the same shape, M1/M2 goes to the SW tower
-                        if (!pair.isSupport)
-                        {
-                            swSoakers.Set(slotPlayer1);
-                            seSoakers.Set(slotPlayer2);
-                        }
-                    }
-                    else
-                    {
-                        if (pair.isSupport)
-                        {
-                            if (shapeA == Shape.Stack)
-                            {
-                                swSoakers.Set(slotPlayer1);
-                            }
-
-                            if (shapeB == Shape.Stack)
-                            {
-                                swSoakers.Set(slotPlayer2);
-                            }
-                        }
-
-                        if (!pair.isSupport)
-                        {
-                            if (shapeA == Shape.Stack)
-                            {
-                                seSoakers.Set(slotPlayer1);
-                            }
-
-                            if (shapeB == Shape.Stack)
-                            {
-                                seSoakers.Set(slotPlayer2);
-                            }
-                        }
-                    }
-                }
-
-                // Second set of towers (tower set even)
-                if ((currentTowerSet & 1) == 0)
-                {
-                    if (pair.isSupport)
-                    {
-                        // They have different shapes - both go to the same tower which is west tower
-                        if (shapeA != shapeB)
-                        {
-                            swSoakers.Set(slotPlayer1);
-                            swSoakers.Set(slotPlayer2);
-                        }
-                        else
-                        { // healer goes to SW tower, tank goes to SE tower - player2 is healer, player1 is tank
-                            swSoakers.Set(slotPlayer2);
-                            seSoakers.Set(slotPlayer1);
-                        }
-                    }
-
-                    if (!pair.isSupport)
-                    {
-                        if (shapeA != shapeB)
-                        {
-                            // They have different shapes - both go to the same tower which is east tower
-                            seSoakers.Set(slotPlayer1);
-                            seSoakers.Set(slotPlayer2);
-                        }
-                        else
-                        {
-                            // range goes to SE tower, melee goes to SW tower - player2 is range, player1 is melee
-                            seSoakers.Set(slotPlayer2);
-                            swSoakers.Set(slotPlayer1);
-                        }
-                    }
-                }
+                var role = korean.Assignment(slot);
+                if (role is PartyRolesConfig.Assignment.MT or PartyRolesConfig.Assignment.OT or PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2)
+                    supportHelpers.Set(slot);
+                else
+                    dpsHelpers.Set(slot);
+            }
+            else if (record != null)
+            {
+                // Round 8 deliberately permits either tower; the player reads their sign.
+                if (record.Sides[slot] is ForsakenKoreanAssignments.Side.SW or ForsakenKoreanAssignments.Side.Either)
+                    swSoakers.Set(slot);
+                if (record.Sides[slot] is ForsakenKoreanAssignments.Side.SE or ForsakenKoreanAssignments.Side.Either)
+                    seSoakers.Set(slot);
             }
         }
+    }
+
+    public void UpdateKoreanTowerRestrictions(PathOfLight towers, bool odd)
+    {
+        if (((currentTowerSet & 1) != 0) != odd || towers.Towers.Count != 2)
+            return;
+        towers.UpdateCurrentTowers();
+        var record = korean.Record(currentTowerSet);
+        var span = CollectionsMarshal.AsSpan(towers.Towers);
+        var party = new BitMask(0xFF);
+        for (var i = 0; i < span.Length; ++i)
+        {
+            // Do not flag everyone as forbidden while a batch of icons is still arriving.
+            span[i].ForbiddenSoakers = record == null ? default : party & ~(i == towers.CurrentSW ? swSoakers : seSoakers);
+        }
+    }
+
+    public void DrawKoreanPositions(int slot, PathOfLight towers, bool odd, uint colour)
+    {
+        if (slot < 0 || slot >= 8 || currentTowerSet < 1 || currentTowerSet > 8 ||
+            ((currentTowerSet & 1) != 0) != odd || towers.Towers.Count != 2)
+            return;
+        var record = korean.Record(currentTowerSet);
+        if (record == null)
+            return;
+        towers.UpdateCurrentTowers();
+        var sw = towers.Towers[towers.CurrentSW].Position;
+        var se = towers.Towers[towers.CurrentSE].Position;
+        var midpoint = new WPos((sw.X + se.X) * 0.5f, (sw.Z + se.Z) * 0.5f);
+        var south = (midpoint - Arena.Center).Normalized();
+        var east = south.OrthoL();
+        var side = record.Sides[slot];
+
+        if (side != ForsakenKoreanAssignments.Side.None)
+        {
+            var shape = record.Shapes[slot];
+            // Separate ifs are intentional: round 8 draws both candidates.
+            if (side is ForsakenKoreanAssignments.Side.SW or ForsakenKoreanAssignments.Side.Either)
+                Arena.ZoneCircleOutline(KoreanTowerPosition(Arena.Center, sw, true, odd, shape), odd ? 1.0f : 0.75f, colour, 2.0f);
+            if (side is ForsakenKoreanAssignments.Side.SE or ForsakenKoreanAssignments.Side.Either)
+                Arena.ZoneCircleOutline(KoreanTowerPosition(Arena.Center, se, false, odd, shape), odd ? 1.0f : 0.75f, colour, 2.0f);
+            return;
+        }
+
+        var bossPosition = (Module as DMU)?.BossP2()?.Position ?? Arena.Center;
+        var position = KoreanHelperPosition(Arena.Center, sw, south, east, bossPosition, korean.Assignment(slot), odd);
+        Arena.ZoneCircleOutline(position, odd ? 1.0f : 0.75f, colour, 2.0f);
+    }
+
+    internal static WPos KoreanTowerPosition(WPos center, WPos tower, bool sw, bool odd, Shape shape)
+    {
+        var inward = (center - tower).Normalized();
+        if (odd)
+            return shape == Shape.Stack ? (sw ? tower : tower + inward * 2.0f + inward.OrthoL() * 0.5f) : tower - inward * 3.8f;
+        var offset = inward.OrthoL() * (sw ? 2.0f : -2.0f);
+        return shape == Shape.Cone ? tower + inward * 3.0f + offset : tower - inward * 3.0f - offset;
+    }
+
+    internal static WPos KoreanHelperPosition(WPos center, WPos sw, WDir south, WDir east, WPos boss, PartyRolesConfig.Assignment role, bool odd)
+    {
+        if (odd)
+        {
+            if (role is PartyRolesConfig.Assignment.MT or PartyRolesConfig.Assignment.OT)
+                return sw + (boss - sw).Normalized().OrthoR() * 4.5f;
+            if (role is PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2)
+                return sw + (sw - center).Normalized() * 4.5f;
+            return center + south * 5.0f + east * 0.5f;
+        }
+        if (role is PartyRolesConfig.Assignment.MT or PartyRolesConfig.Assignment.OT)
+            return center + (-south - east).Normalized() * 6.0f;
+        if (role is PartyRolesConfig.Assignment.M1 or PartyRolesConfig.Assignment.M2)
+            return center + (-south + east).Normalized() * 6.0f;
+        return center + east * (role is PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2 ? -10.0f : 10.0f);
     }
 
     private void SetupPairs(int[] slots)
@@ -474,6 +486,198 @@ sealed class ForsakenShapes(BossModule module) : BossComponent(module)
         }
     }
 }
+
+// Korean replacement for Kroxy. Each icon occurrence is retained, including
+// consecutive occurrences of the same shape. There are four shape generations
+// per player: the raidwide and that group's first three tower resolutions.
+sealed class ForsakenKoreanAssignments
+{
+    public enum Side { None, SW, SE, Either }
+
+    public sealed class TowerRecord
+    {
+        public readonly ForsakenShapes.Shape[] Shapes = new ForsakenShapes.Shape[8];
+        public readonly Side[] Sides = new Side[8];
+    }
+
+    private readonly List<ForsakenShapes.Shape>[] iconHistory = Enumerable.Range(0, 8).Select(_ => new List<ForsakenShapes.Shape>(4)).ToArray();
+    private readonly TowerRecord?[] history = new TowerRecord?[9];
+    private readonly int[] groups = new int[8];
+    private PartyRolesConfig.Assignment[]? assignments;
+
+    public bool GroupsReady => assignments != null;
+    public int Group(int slot) => groups[slot];
+    public PartyRolesConfig.Assignment Assignment(int slot) => assignments![slot];
+    public TowerRecord? Record(int round) => round >= 1 && round <= 8 ? history[round] : null;
+    public static int ActiveGroup(int round) => round is 1 or 2 or 3 or 8 ? 1 : 2;
+    private static bool IsSupport(PartyRolesConfig.Assignment role) => role is PartyRolesConfig.Assignment.MT or PartyRolesConfig.Assignment.OT or PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2;
+
+    public void ObserveIcon(int slot, ForsakenShapes.Shape shape)
+    {
+        if (slot >= 0 && slot < 8 && shape != ForsakenShapes.Shape.None && iconHistory[slot].Count < 4)
+            iconHistory[slot].Add(shape);
+    }
+
+    public bool Initialize(int[] slots)
+    {
+        if (GroupsReady)
+            return true;
+
+        PartyRolesConfig.Assignment[] roles = [PartyRolesConfig.Assignment.MT, PartyRolesConfig.Assignment.OT,
+            PartyRolesConfig.Assignment.H1, PartyRolesConfig.Assignment.H2, PartyRolesConfig.Assignment.M1,
+            PartyRolesConfig.Assignment.M2, PartyRolesConfig.Assignment.R1, PartyRolesConfig.Assignment.R2];
+        var bySlot = new PartyRolesConfig.Assignment[8];
+        var seen = new bool[8];
+        foreach (var role in roles)
+        {
+            if ((int)role >= slots.Length)
+                return false;
+            var slot = slots[(int)role];
+            if (slot < 0 || slot >= 8 || seen[slot] || iconHistory[slot].Count == 0)
+                return false;
+            seen[slot] = true;
+            bySlot[slot] = role;
+        }
+
+        // The initial support and DPS groups each have one stack and three
+        // identical non-stack shapes; the two role groups have opposite shapes.
+        var supports = Enumerable.Range(0, 8).Where(s => IsSupport(bySlot[s])).ToArray();
+        var dps = Enumerable.Range(0, 8).Where(s => !IsSupport(bySlot[s])).ToArray();
+        if (!ValidInitial(supports) || !ValidInitial(dps))
+            return false;
+        var supportShape = supports.Select(s => iconHistory[s][0]).First(s => s != ForsakenShapes.Shape.Stack);
+        var dpsShape = dps.Select(s => iconHistory[s][0]).First(s => s != ForsakenShapes.Shape.Stack);
+        if (supportShape == dpsShape)
+            return false;
+
+        (PartyRolesConfig.Assignment A, PartyRolesConfig.Assignment B)[] pairs = [
+            (PartyRolesConfig.Assignment.MT, PartyRolesConfig.Assignment.H1),
+            (PartyRolesConfig.Assignment.OT, PartyRolesConfig.Assignment.H2),
+            (PartyRolesConfig.Assignment.M1, PartyRolesConfig.Assignment.R1),
+            (PartyRolesConfig.Assignment.M2, PartyRolesConfig.Assignment.R2)];
+        foreach (var pair in pairs)
+        {
+            var a = slots[(int)pair.A];
+            var b = slots[(int)pair.B];
+            groups[a] = groups[b] = iconHistory[a][0] == ForsakenShapes.Shape.Stack || iconHistory[b][0] == ForsakenShapes.Shape.Stack ? 1 : 2;
+        }
+        assignments = bySlot;
+        return true;
+    }
+
+    private bool ValidInitial(int[] slots)
+    {
+        var first = slots.Select(s => iconHistory[s][0]).ToArray();
+        return first.Count(s => s == ForsakenShapes.Shape.Stack) == 1 &&
+            (first.Count(s => s == ForsakenShapes.Shape.Cone) == 3 || first.Count(s => s == ForsakenShapes.Shape.Spread) == 3);
+    }
+
+    public void Advance(int currentRound)
+    {
+        if (!GroupsReady)
+            return;
+        for (var round = 1; round <= Math.Min(currentRound, 8); ++round)
+        {
+            if (history[round] == null && !TryBuild(round))
+                break;
+        }
+    }
+
+    private bool TryBuild(int round)
+    {
+        var active = Enumerable.Range(0, 8).Where(s => groups[s] == ActiveGroup(round)).ToArray();
+        // G1: rounds 1,2,3,8 use occurrences 0,1,2,3.
+        // G2: rounds 4,5,6,7 use occurrences 0,1,2,3.
+        var generation = round <= 3 ? round - 1 : round == 8 ? 3 : round - 4;
+        if (active.Any(s => iconHistory[s].Count <= generation))
+            return false;
+        var record = new TowerRecord();
+        foreach (var slot in active)
+            record.Shapes[slot] = iconHistory[slot][generation];
+        var odd = (round & 1) != 0;
+        if (active.Count(s => record.Shapes[s] == ForsakenShapes.Shape.Stack) != (odd ? 2 : 0) ||
+            active.Count(s => record.Shapes[s] == ForsakenShapes.Shape.Cone) != (odd ? 1 : 2) ||
+            active.Count(s => record.Shapes[s] == ForsakenShapes.Shape.Spread) != (odd ? 1 : 2))
+            return false;
+
+        if (round == 8)
+        {
+            foreach (var slot in active)
+                record.Sides[slot] = Side.Either;
+        }
+        else if (round == 4)
+        {
+            foreach (var slot in active)
+                record.Sides[slot] = Assignment(slot) is PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2 or PartyRolesConfig.Assignment.M1 or PartyRolesConfig.Assignment.M2 ? Side.SW : Side.SE;
+        }
+        else if (odd)
+        {
+            var previous = Record(round - 1);
+            if (round != 1 && previous == null)
+                return false;
+            foreach (var slot in active)
+            {
+                record.Sides[slot] = record.Shapes[slot] switch
+                {
+                    ForsakenShapes.Shape.Cone => Side.SW,
+                    ForsakenShapes.Shape.Spread => Side.SE,
+                    _ => round == 1 ? (IsSupport(Assignment(slot)) ? Side.SW : Side.SE) : previous!.Sides[slot]
+                };
+            }
+            var stacks = active.Where(s => record.Shapes[s] == ForsakenShapes.Shape.Stack).ToArray();
+            if (record.Sides[stacks[0]] == record.Sides[stacks[1]])
+            {
+                if (previous == null)
+                    return false;
+                var outer = stacks.Where(s => previous.Shapes[s] == ForsakenShapes.Shape.Spread).ToArray();
+                if (outer.Length != 1)
+                    return false;
+                record.Sides[outer[0]] = Opposite(record.Sides[outer[0]]);
+            }
+        }
+        else // rounds 2 and 6: preserve the preceding odd round's sides
+        {
+            var previous = Record(round - 1);
+            if (previous == null)
+                return false;
+            foreach (var slot in active)
+                record.Sides[slot] = previous.Sides[slot];
+            var sw = active.Where(s => previous.Sides[s] == Side.SW).ToArray();
+            var se = active.Where(s => previous.Sides[s] == Side.SE).ToArray();
+            if (sw.Length != 2 || se.Length != 2)
+                return false;
+            if (record.Shapes[sw[0]] == record.Shapes[sw[1]])
+            {
+                var outerSW = sw.Where(s => previous.Shapes[s] is ForsakenShapes.Shape.Cone or ForsakenShapes.Shape.Spread).ToArray();
+                var outerSE = se.Where(s => previous.Shapes[s] is ForsakenShapes.Shape.Cone or ForsakenShapes.Shape.Spread).ToArray();
+                if (outerSW.Length != 1 || outerSE.Length != 1)
+                    return false;
+                record.Sides[outerSW[0]] = Side.SE;
+                record.Sides[outerSE[0]] = Side.SW;
+            }
+        }
+
+        if (round != 8)
+        {
+            foreach (var side in new[] { Side.SW, Side.SE })
+            {
+                var occupants = active.Where(s => record.Sides[s] == side).ToArray();
+                if (occupants.Length != 2)
+                    return false;
+                var expected = odd ? (side == Side.SW ? ForsakenShapes.Shape.Cone : ForsakenShapes.Shape.Spread) : ForsakenShapes.Shape.Cone;
+                var other = odd ? ForsakenShapes.Shape.Stack : ForsakenShapes.Shape.Spread;
+                if (occupants.Count(s => record.Shapes[s] == expected) != 1 || occupants.Count(s => record.Shapes[s] == other) != 1)
+                    return false;
+            }
+        }
+        // This object is never edited again after publication.
+        history[round] = record;
+        return true;
+    }
+
+    private static Side Opposite(Side side) => side == Side.SW ? Side.SE : Side.SW;
+}
+
 
 sealed class ForsakenBaitsSpreadStacks(BossModule module) : Components.UniformStackSpread(module, 5f, 5f, 3, 3)
 {
@@ -615,6 +819,12 @@ sealed class ForsakenSolverSet1(BossModule module) : BossComponent(module)
             return;
         }
 
+        if (ForsakenShapes.UseKorean)
+        {
+            shapes.DrawKoreanPositions(pcSlot, towers, true, colourCircle);
+            return;
+        }
+
         if (towers.Towers.Count != 2 || shapes.swSoakers.None() || shapes.seSoakers.None())
         {
             return;
@@ -652,18 +862,7 @@ sealed class ForsakenSolverSet1(BossModule module) : BossComponent(module)
                     Arena.ZoneCircleOutline(posSW + newSouth * 3.0f, 1.0f, colourCircle, 2.0f);
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var toCenter = (center - posSW).Normalized();
-                if (shape == ForsakenShapes.Shape.Stack)
-                {
-                    Arena.ZoneCircleOutline(posSW + toCenter + 0.5f * toCenter.OrthoL(), 1.0f, colourCircle, 2.0f);
-                }
-                else if (shape == ForsakenShapes.Shape.Cone)
-                {
-                    Arena.ZoneCircleOutline(posSW - 3.0f * toCenter, 1.0f, colourCircle, 2.0f);
-                }
-            }
+
         }
 
         // Case: SW players with same debuffs
@@ -682,18 +881,7 @@ sealed class ForsakenSolverSet1(BossModule module) : BossComponent(module)
                     Arena.ZoneCircleOutline(posSW - towardSW * 3.0f - newSouth * 4.0f, 1.0f, colourCircle, 2.0f);
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var toCenter = (center - posSW).Normalized();
-                if (assignment is PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2)
-                {
-                    Arena.ZoneCircleOutline(posSW - 4.5f * toCenter, 1.0f, colourCircle, 2.0f);
-                }
-                else if (assignment is PartyRolesConfig.Assignment.MT or PartyRolesConfig.Assignment.OT)
-                {
-                    Arena.ZoneCircleOutline(posSW + 4.5f * toCenter + 0.5f * toCenter.OrthoL(), 1.0f, colourCircle, 2.0f);
-                }
-            }
+
         }
 
         // Case: SE players with different debuffs
@@ -712,19 +900,7 @@ sealed class ForsakenSolverSet1(BossModule module) : BossComponent(module)
                     Arena.ZoneCircleOutline(posSE + towardSE * 2.0f - newSouth * 3.0f, 1.0f, colourCircle, 2.0f);
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var toCenter = (center - posSE).Normalized();
-                var orthoL = toCenter.OrthoL();
-                if (shape == ForsakenShapes.Shape.Stack)
-                {
-                    Arena.ZoneCircleOutline(posSE + 3.0f * toCenter - 2.0f * orthoL, 1.0f, colourCircle, 2.0f);
-                }
-                else if (shape == ForsakenShapes.Shape.Spread)
-                {
-                    Arena.ZoneCircleOutline(posSE - 2.5f * toCenter + 2.5f * orthoL, 1.0f, colourCircle, 2.0f);
-                }
-            }
+
         }
 
         // Case: SE players with same debuffs
@@ -739,14 +915,7 @@ sealed class ForsakenSolverSet1(BossModule module) : BossComponent(module)
                     Arena.ZoneCircleOutline(posSE - towardSE * 4.0f + newSouth * 3.0f, 1.0f, colourCircle, 2.0f);
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var toCenter = (center - posSE).Normalized();
-                if (assignment is PartyRolesConfig.Assignment.M1 or PartyRolesConfig.Assignment.M2 or PartyRolesConfig.Assignment.R1 or PartyRolesConfig.Assignment.R2)
-                {
-                    Arena.ZoneCircleOutline(posSE + 4.5f * toCenter + toCenter.OrthoL(), 1.0f, colourCircle, 2.0f);
-                }
-            }
+
         }
     }
 
@@ -754,6 +923,12 @@ sealed class ForsakenSolverSet1(BossModule module) : BossComponent(module)
     {
         if (shapes == null || towers == null)
         {
+            return;
+        }
+
+        if (ForsakenShapes.UseKorean)
+        {
+            shapes.UpdateKoreanTowerRestrictions(towers, true);
             return;
         }
 
@@ -801,6 +976,12 @@ sealed class ForsakenSolverSet2(BossModule module) : BossComponent(module)
             return;
         }
 
+        if (ForsakenShapes.UseKorean)
+        {
+            shapes.DrawKoreanPositions(pcSlot, towers, false, Colors.Safe);
+            return;
+        }
+
         if (towers.Towers.Count != 2 || shapes.swSoakers.None() || shapes.seSoakers.None())
         {
             return;
@@ -836,18 +1017,7 @@ sealed class ForsakenSolverSet2(BossModule module) : BossComponent(module)
                     }
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var offset = 2.0f * toCenter.OrthoL();
-                if (shapes.shapes[pcSlot] == ForsakenShapes.Shape.Cone)
-                {
-                    Arena.ZoneCircleOutline(towerSW + 3.0f * toCenter + offset, 0.75f, Colors.Safe, 1.0f);
-                }
-                else if (shapes.shapes[pcSlot] == ForsakenShapes.Shape.Spread)
-                {
-                    Arena.ZoneCircleOutline(towerSW - 3.0f * toCenter - offset, 0.75f, Colors.Safe, 1.0f);
-                }
-            }
+
         }
 
         // Case: SW players with same debuffs (helpers)
@@ -875,19 +1045,7 @@ sealed class ForsakenSolverSet2(BossModule module) : BossComponent(module)
                     Arena.ZoneCircleOutline(towerSW + toCenter.Rotate(35.0f.Degrees()) * 11.5f, 0.75f, Colors.Safe, 1.0f);
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var offset = toCenter.OrthoL();
-                if (assignment is PartyRolesConfig.Assignment.H1 or PartyRolesConfig.Assignment.H2)
-                {
-                    Arena.ZoneCircleOutline(towerSW + toCenter + 7.0f * offset, 0.75f, Colors.Safe, 1.0f);
-                }
 
-                if (assignment is PartyRolesConfig.Assignment.MT or PartyRolesConfig.Assignment.OT)
-                {
-                    Arena.ZoneCircleOutline(towerSW + 9.0f * toCenter + 6.0f * offset, 0.75f, Colors.Safe, 1.0f);
-                }
-            }
         }
 
         // Case: SE players with different debuffs (soakers)
@@ -913,18 +1071,7 @@ sealed class ForsakenSolverSet2(BossModule module) : BossComponent(module)
                     }
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var offset = 2.0f * toCenter.OrthoL();
-                if (shapes.shapes[pcSlot] == ForsakenShapes.Shape.Cone)
-                {
-                    Arena.ZoneCircleOutline(towerSE + 3.0f * toCenter - offset, 0.75f, Colors.Safe, 1.0f);
-                }
-                else if (shapes.shapes[pcSlot] == ForsakenShapes.Shape.Spread)
-                {
-                    Arena.ZoneCircleOutline(towerSE - 3.0f * toCenter + offset, 0.75f, Colors.Safe, 1.0f);
-                }
-            }
+
         }
 
         // Case: SE players with same debuffs (helpers)
@@ -951,18 +1098,7 @@ sealed class ForsakenSolverSet2(BossModule module) : BossComponent(module)
                     Arena.ZoneCircleOutline(towerSE + toCenter.Rotate(-35.0f.Degrees()) * 11.5f, 0.75f, Colors.Safe, 1.0f);
                 }
             }
-            else if (dmuConfig.P2Forsaken == DMUConfig.P2ForsakenStrategy.Kroxy_Rinon_Melee_Flex)
-            {
-                var offset = toCenter.OrthoL();
-                if (assignment is PartyRolesConfig.Assignment.R1 or PartyRolesConfig.Assignment.R2)
-                {
-                    Arena.ZoneCircleOutline(towerSE + toCenter - 7.0f * offset, 0.75f, Colors.Safe, 1.0f);
-                }
-                else if (assignment is PartyRolesConfig.Assignment.M1 or PartyRolesConfig.Assignment.M2)
-                {
-                    Arena.ZoneCircleOutline(towerSE + 9.0f * toCenter - 6.0f * offset, 0.75f, Colors.Safe, 1.0f);
-                }
-            }
+
         }
     }
 
@@ -970,6 +1106,12 @@ sealed class ForsakenSolverSet2(BossModule module) : BossComponent(module)
     {
         if (shapes == null || towers == null)
         {
+            return;
+        }
+
+        if (ForsakenShapes.UseKorean)
+        {
+            shapes.UpdateKoreanTowerRestrictions(towers, false);
             return;
         }
 
