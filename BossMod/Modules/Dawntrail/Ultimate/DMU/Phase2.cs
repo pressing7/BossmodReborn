@@ -1189,12 +1189,12 @@ sealed class WingsOfDestructionTB(BossModule module) : Components.GenericBaitAwa
 sealed class Trine(DMU module) : Components.GenericAOEs(module, (uint)AID.Trine)
 {
     private readonly List<AOEInstance> aoes = [];
-    private readonly List<Actor> triangles = [];
+    private readonly List<int> firstWaveSectors = new(3);
+    private (float MT, float OT, float Party)? directions;
     private const float radius = 5.77350269189626f; // 10f * MathF.Sqrt(3f) / 3f;
     private const float halfradius = 5.77350269189626f * 0.5f;
     private readonly AOEShapeCircle circle = new(6f);
     private readonly PartyRolesConfig partyConfig = Service.Config.Get<PartyRolesConfig>();
-    private readonly Actor bossP2 = module.BossP2()!;
 
     public override void OnActorCreated(Actor actor)
     {
@@ -1203,7 +1203,7 @@ sealed class Trine(DMU module) : Components.GenericAOEs(module, (uint)AID.Trine)
             return;
         }
 
-        triangles.Add(actor);
+        RecordFirstWave(actor.Position);
 
         var direction = oid == (uint)OID.YellowTriangle ? 1f : -1f;
         var pos = actor.Position;
@@ -1247,83 +1247,73 @@ sealed class Trine(DMU module) : Components.GenericAOEs(module, (uint)AID.Trine)
         return CollectionsMarshal.AsSpan(aoes)[..count];
     }
 
-    public override void DrawArenaForeground(int pcSlot, Actor pc)
+    // Fixed north is 0 degrees; sectors increase clockwise in 60-degree steps.
+    // Only the first three distinct outer positions determine the strategy.
+    private void RecordFirstWave(WPos position)
     {
-        if (NumCasts < 9)
+        if (directions != null)
+            return;
+
+        var offset = position - Arena.Center;
+        if (offset.LengthSq() <= 1f) // The central triangle is not a pattern slot.
+            return;
+
+        var degrees = MathF.Atan2(offset.X, -offset.Z) * 180f / MathF.PI;
+        var sector = (int)MathF.Round((degrees + 360f) / 60f) % 6;
+        if (firstWaveSectors.Contains(sector))
+            return;
+        firstWaveSectors.Add(sector);
+        if (firstWaveSectors.Count != 3)
+            return;
+
+        // Three adjacent triangles: the middle triangle defines relative north.
+        foreach (var start in firstWaveSectors)
         {
+            if (firstWaveSectors.Contains((start + 1) % 6) &&
+                firstWaveSectors.Contains((start + 2) % 6))
+            {
+                var north = ((start + 1) % 6) * 60f;
+                directions = (north - 60f, north, north + 60f);
+                return;
+            }
+        }
+
+        // One adjacent pair: its angular midpoint defines relative north.
+        foreach (var start in firstWaveSectors)
+        {
+            var next = (start + 1) % 6;
+            if (!firstWaveSectors.Contains(next))
+                continue;
+
+            var isolated = firstWaveSectors.Single(s => s != start && s != next);
+            var north = start * 60f + 30f;
+            directions = (north - 30f, north + 30f, isolated * 60f);
             return;
         }
+
+        // Alternating triangles use the fixed north of the arena.
+        directions = firstWaveSectors.Contains(0) ? (240f, 0f, 120f) : (300f, 180f, 60f);
+    }
+
+    public override void DrawArenaForeground(int pcSlot, Actor pc)
+    {
+        // Keep the existing timing: show destinations after the first explosions.
+        if (NumCasts < 9 || directions is not { } positions || pcSlot < 0 || pcSlot >= 8)
+            return;
 
         var slots = partyConfig.SlotsPerAssignment(Raid);
         if (slots.Length == 0)
-        {
             return;
-        }
         var assignment = partyConfig[Raid.Members[pcSlot].ContentId];
-
-        var waymarkA = WorldState.Waymarks.GetFieldMark((int)Waymark.A);
-        var waymark1 = WorldState.Waymarks.GetFieldMark((int)Waymark.N1);
-
-        if (waymarkA is not Vector3 wayA || waymark1 is not Vector3 way1)
+        var (degrees, distance) = assignment switch
         {
-            return;
-        }
+            PartyRolesConfig.Assignment.MT => (positions.MT, 20f),
+            PartyRolesConfig.Assignment.OT => (positions.OT, 16f),
+            _ => (positions.Party, 18f)
+        };
 
-        var center = Arena.Center;
-        var waymarkAAngle = (new WPos(wayA) - center).ToAngle();
-        var waymark1Angle = (new WPos(way1) - center).ToAngle();
-        var firstWave = triangles.Take(3).Select(t => t.Position).ToArray();
-
-        Array.Sort(firstWave, delegate (WPos x, WPos y)
-        {
-            var xAngle = (x - center).ToAngle();
-            var yAngle = (y - center).ToAngle();
-
-            var xDeg = xAngle.AlmostEqual(waymarkAAngle, 0.01f) ? 180f : (xAngle - waymarkAAngle + 180f.Degrees()).Normalized().Deg;
-            var yDeg = yAngle.AlmostEqual(waymarkAAngle, 0.01f) ? 180f : (yAngle - waymarkAAngle + 180f.Degrees()).Normalized().Deg;
-
-            return xDeg < yDeg ? 1 : -1;
-        });
-
-        if (assignment is not PartyRolesConfig.Assignment.MT and not PartyRolesConfig.Assignment.OT)
-        {
-            Arena.ZoneCircleOutline(firstWave[0], 1f, Colors.Safe, 2f);
-            return;
-        }
-
-        var ccwSpot = firstWave.MinBy(p => (waymark1Angle - (p - center).ToAngle()).Normalized().Deg)!;
-        if (assignment == PartyRolesConfig.Assignment.OT)
-        {
-            Arena.ZoneCircleOutline(center + (ccwSpot - center).Normalized() * 20f, 1f, Colors.Safe, 2f);
-        }
-
-        var closestSpot = ccwSpot;
-        var bossP = bossP2.Position;
-        var counter = (ccwSpot - bossP).Length();
-        var angleCCW = (ccwSpot - bossP).ToAngle();
-        for (var r = 0.5f; r <= counter; r += 0.5f)
-        {
-            List<WPos> spots = [];
-            for (var degree = -60f; degree <= 60f; degree += 5f)
-            {
-                var spot = bossP + r * (angleCCW + degree.Degrees()).ToDirection();
-
-                if (!aoes.Any(aoe => aoe.Check(spot)))
-                {
-                    spots.Add(spot);
-                }
-            }
-
-            if (spots.Count > 0)
-            {
-                closestSpot = spots.MinBy(spot => ((spot - bossP).ToAngle() - angleCCW).Abs().Deg)!;
-                break;
-            }
-        }
-
-        if (assignment == PartyRolesConfig.Assignment.MT)
-        {
-            Arena.ZoneCircleOutline(closestSpot, 1f, Colors.Safe, 2f);
-        }
+        var radians = degrees * MathF.PI / 180f;
+        var direction = new WDir(MathF.Sin(radians), -MathF.Cos(radians));
+        Arena.ZoneCircleOutline(Arena.Center + direction * distance, 1f, Colors.Safe, 2f);
     }
 }
