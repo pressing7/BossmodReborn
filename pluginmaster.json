@@ -3,7 +3,7 @@
     "Author": "The Combat Reborn Team; pressing7 (KR modifications)",
     "Name": "BossMod Reborn KR",
     "InternalName": "BossModRebornKR",
-    "AssemblyVersion": "1.0.3.1",
+    "AssemblyVersion": "1.0.4.1",
     "Description": "A bunch of utilities to simplify boss mechanics",
     "ApplicableVersion": "any",
     "RepoUrl": "https://github.com/pressing7/BossmodReborn",
@@ -29,9 +29,9 @@
     "IconUrl": "https://raw.githubusercontent.com/FFXIV-CombatReborn/RebornAssets/main/IconAssets/BMR_Icon.png",
     "Punchline": "pressing7's custom DMU strategy build",
     "AcceptsFeedback": false,
-    "DownloadLinkInstall": "https://github.com/pressing7/BossmodReborn/releases/download/kr-1.0.3.1/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/pressing7/BossmodReborn/releases/download/kr-1.0.3.1/latest.zip",
-    "LastUpdate": "1791480956",
-    "Changelog": "KR build 1.0.3.1; source 70ee0df9ab7c268d52a787b794245fc9aaaca735"
+    "DownloadLinkInstall": "https://github.com/pressing7/BossmodReborn/releases/download/kr-1.0.4.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/pressing7/BossmodReborn/releases/download/kr-1.0.4.1/latest.zip",
+    "LastUpdate": "1791527198",
+    "Changelog": "KR build 1.0.4.1; source 70ee0df9ab7c268d52a787b794245fc9aaaca735"
   }
 ]
