@@ -1,5 +1,37 @@
 ﻿namespace BossMod.Dawntrail.Ultimate.DMU;
 
+// Fixed arena north is 0 degrees; positive angles below run clockwise.
+static class KoreanP5Positions
+{
+    public static WPos At(WPos center, float degrees, float radius)
+    {
+        var radians = degrees * (MathF.PI / 180f);
+        return center + new WDir(MathF.Sin(radians), -MathF.Cos(radians)) * radius;
+    }
+
+    public static float OrchestraAngle(PartyRolesConfig.Assignment assignment) => assignment switch
+    {
+        PartyRolesConfig.Assignment.OT => 22.5f,
+        PartyRolesConfig.Assignment.R2 => 67.5f,
+        PartyRolesConfig.Assignment.M2 => 112.5f,
+        PartyRolesConfig.Assignment.H2 => 157.5f,
+        PartyRolesConfig.Assignment.H1 => 202.5f,
+        PartyRolesConfig.Assignment.M1 => 247.5f,
+        PartyRolesConfig.Assignment.R1 => 292.5f,
+        PartyRolesConfig.Assignment.MT => 337.5f,
+        _ => float.NaN
+    };
+
+    public static WPos? TankDiffusion(WPos center, Actor actor)
+    {
+        if (actor.FindStatus((uint)SID.SurpriseFlare) != null)
+            return At(center, 0f, 19f);
+        if (actor.FindStatus((uint)SID.SurpriseHoly) != null)
+            return At(center, 0f, 10f);
+        return null;
+    }
+}
+
 sealed class UltimaRepeater(BossModule module) : Components.RaidwideCast(module, (uint)AID.UltimaRepeaterCast)
 {
     public override void OnEventCast(Actor caster, ActorCastEvent spell)
@@ -39,6 +71,22 @@ sealed class FellForces(DMU module) : Components.GenericBaitStack(module)
                 CurrentBaits.Clear();
             }
         }
+    }
+
+    public override void DrawArenaForeground(int pcSlot, Actor pc)
+    {
+        base.DrawArenaForeground(pcSlot, pc);
+        if (!active || NumCasts >= expectedCasts)
+            return;
+        var angle = pc.Role switch
+        {
+            Role.Tank => 0f,
+            Role.Healer => 225f,
+            Role.Melee or Role.Ranged => 135f,
+            _ => float.NaN
+        };
+        if (!float.IsNaN(angle))
+            Arena.ZoneCircleOutline(KoreanP5Positions.At(Arena.Center, angle, 8f), 1f, Colors.Safe, 2f);
     }
 
     private void SetupBaits()
@@ -258,6 +306,8 @@ sealed class ChaoticFloodStack(BossModule module) : Components.GenericStackSprea
 sealed class MaddeningOrchestra(DMU module) : Components.GenericBaitAway(module, centerAtTarget: true)
 {
     private bool active = false;
+    private bool tankStackResolved;
+    private readonly PartyRolesConfig partyConfig = Service.Config.Get<PartyRolesConfig>();
     private readonly DateTime[] magicVulnerability = new DateTime[PartyState.MaxPartySize];
     private bool firstWave = false;
     private readonly Actor boss = module.KefkaP5()!;
@@ -284,6 +334,8 @@ sealed class MaddeningOrchestra(DMU module) : Components.GenericBaitAway(module,
 
     public override void OnEventCast(Actor caster, ActorCastEvent spell)
     {
+        if (spell.Action.ID == (uint)AID.ChaoticFlareTB)
+            tankStackResolved = true;
         if (spell.Action.ID is ((uint)AID.Holy) or ((uint)AID.Flare))
         {
             ++NumCasts;
@@ -299,7 +351,7 @@ sealed class MaddeningOrchestra(DMU module) : Components.GenericBaitAway(module,
     {
         CurrentBaits.Clear();
 
-        if (!active)
+        if (!active || NumCasts > 5)
         {
             return;
         }
@@ -325,11 +377,40 @@ sealed class MaddeningOrchestra(DMU module) : Components.GenericBaitAway(module,
         ForbiddenPlayers = forbiddenPlayers;
     }
 
+    public override void DrawArenaForeground(int pcSlot, Actor pc)
+    {
+        base.DrawArenaForeground(pcSlot, pc);
+        if (!active || pcSlot < 0 || pcSlot >= PartyState.MaxPartySize)
+            return;
+
+        WPos? position;
+        if (pc.Role == Role.Tank && (firstWave || tankStackResolved))
+            position = tankStackResolved ? KoreanP5Positions.TankDiffusion(Arena.Center, pc) : KoreanP5Positions.At(Arena.Center, 0f, 10f);
+        else if (pc.Role != Role.Tank && NumCasts > 5)
+            position = KoreanP5Positions.At(Arena.Center, 180f, 11f);
+        else
+        {
+            if (partyConfig.SlotsPerAssignment(Raid).Length == 0)
+                return;
+            var angle = KoreanP5Positions.OrchestraAngle(partyConfig[Raid.Members[pcSlot].ContentId]);
+            if (float.IsNaN(angle))
+                return;
+            // Wait for all three first-wave non-tank vulnerabilities to arrive.
+            // This prevents briefly sending all six players inward between events.
+            var vulnerabilitiesReady = Raid.WithSlot(true, true, true)
+                .Count(p => p.Item2.Role != Role.Tank && magicVulnerability[p.Item1] > WorldState.CurrentTime) == 3;
+            var bait = firstWave && vulnerabilitiesReady && pc.Role != Role.Tank && magicVulnerability[pcSlot] <= WorldState.CurrentTime;
+            position = KoreanP5Positions.At(Arena.Center, angle, bait ? 7f : 11f);
+        }
+        if (position is WPos safe)
+            Arena.ZoneCircleOutline(safe, 1f, Colors.Safe, 2f);
+    }
+
     public override void AddHints(int slot, Actor actor, TextHints hints)
     {
         base.AddHints(slot, actor, hints);
 
-        if (!ForbiddenPlayers[slot] && firstWave)
+        if (active && NumCasts == 5 && !ForbiddenPlayers[slot] && firstWave)
         {
             if (IsBaitTarget(actor))
             {
@@ -354,6 +435,7 @@ sealed class ChaoticFlareTB(DMU module) : Components.GenericBaitStack(module, (u
         {
             NumCasts++;
             active = false;
+            CurrentBaits.Clear();
         }
     }
 
@@ -405,6 +487,18 @@ sealed class ChaoticFlareTB(DMU module) : Components.GenericBaitStack(module, (u
 
 sealed class ChaoticHolyFlareDiffusion(BossModule module) : Components.GenericBaitAway(module, centerAtTarget: true, onlyShowOutlines: true)
 {
+    public override void DrawArenaForeground(int pcSlot, Actor pc)
+    {
+        base.DrawArenaForeground(pcSlot, pc);
+        if (NumCasts >= 2)
+            return;
+        var position = pc.Role == Role.Tank
+            ? KoreanP5Positions.TankDiffusion(Arena.Center, pc)
+            : KoreanP5Positions.At(Arena.Center, 180f, 11f);
+        if (position is WPos safe)
+            Arena.ZoneCircleOutline(safe, 1f, Colors.Safe, 2f);
+    }
+
     public override void OnStatusGain(Actor actor, ref ActorStatus status)
     {
         if (status.ID is var id && id == (uint)SID.SurpriseHoly)
@@ -431,81 +525,92 @@ sealed class ChaoticHolyFlareDiffusion(BossModule module) : Components.GenericBa
     }
 }
 
-// Towers sets ~7.5 seconds apart, towers explosions and tower glows happen at the same time, so remove the tower instance from the list
-// No clue why I decided to make a list and everything and check the angle of towers to get an order, you can just get the WPos of towers since it always the same
-// and just set the order like that instead, but oh well
+// Remember the initial debuffs, and lock assignments separately for each group of four glows.
+// New glows and old explosions can be interleaved in the same update.
 sealed class Celestriad(BossModule module) : Components.GenericTowers(module)
 {
-    private readonly List<(Actor actor, Elements element)> allTowers = []; // Used for the initial setup of the component
     private enum Elements { NONE, ICE, FIRE, THUNDER, NO_ELEMENT }
-    private readonly List<Elements> towerOrder = [Elements.NONE, Elements.NONE, Elements.NONE];
-    // Starting debuff is the one we care about; it will disappear by the time we get to final tower set so we will just save it forever as it's only necessary for towers
+    private readonly List<(Actor actor, Elements element)> allTowers = [];
+    private readonly List<Elements> towerOrder = [];
     private readonly Elements[] debuffs = Utils.MakeArray(PartyState.MaxPartySize, Elements.NONE);
+    private readonly List<List<ulong>> waves = [];
+    private readonly List<int> activeWaves = []; // Parallel to Towers.
+    private readonly Dictionary<(int wave, ulong actorID), BitMask> assignments = [];
+    private readonly HashSet<int> assignedWaves = [];
+    private int numGlows;
+
+    private float ClockwiseAngle(Actor actor)
+    {
+        var offset = actor.Position - Arena.Center;
+        var angle = MathF.Atan2(offset.X, -offset.Z);
+        return angle < 0f ? angle + 2f * MathF.PI : angle;
+    }
 
     public override void OnActorCreated(Actor actor)
     {
-        if (actor.OID is var id && id == (uint)OID.IceTower)
+        var element = actor.OID switch
         {
-            allTowers.Add((actor, Elements.ICE));
-        }
-        else if (id == (uint)OID.FireTower)
-        {
-            allTowers.Add((actor, Elements.FIRE));
-        }
-        else if (id == (uint)OID.ThunderTower)
-        {
-            allTowers.Add((actor, Elements.THUNDER));
-        }
+            (uint)OID.IceTower => Elements.ICE,
+            (uint)OID.FireTower => Elements.FIRE,
+            (uint)OID.ThunderTower => Elements.THUNDER,
+            _ => Elements.NONE
+        };
+        if (element == Elements.NONE || allTowers.Any(t => t.actor.InstanceID == actor.InstanceID))
+            return;
+        allTowers.Add((actor, element));
+        if (allTowers.Count != 9)
+            return;
 
-        if (allTowers.Count == 9)
+        allTowers.Sort((a, b) => ClockwiseAngle(a.actor).CompareTo(ClockwiseAngle(b.actor)));
+        // Start at an element boundary, so a group straddling north is not split.
+        var start = allTowers.FindIndex(t => t.element != allTowers[8].element);
+        if (start < 0)
+            return;
+        var ordered = allTowers.Skip(start).Concat(allTowers.Take(start)).ToArray();
+        allTowers.Clear();
+        allTowers.AddRange(ordered);
+        towerOrder.Clear();
+        for (var i = 0; i < 9; i += 3)
         {
-            allTowers.Sort(delegate ((Actor actor, Elements element) a, (Actor actor, Elements element) b)
+            var elementAtStart = allTowers[i].element;
+            if (allTowers[i + 1].element != elementAtStart || allTowers[i + 2].element != elementAtStart || towerOrder.Contains(elementAtStart))
             {
-                var north = Angle.AnglesCardinals[2];
-                var xAngle = (a.actor.Position - Arena.Center).ToAngle();
-                var yAngle = (b.actor.Position - Arena.Center).ToAngle();
-
-                var xDeg = xAngle.AlmostEqual(north, 0.01f) ? 180f : xAngle.Deg;
-                var yDeg = yAngle.AlmostEqual(north, 0.01f) ? 180f : yAngle.Deg;
-
-                return xDeg < yDeg ? 1 : -1;
-            });
-
-            // We can use simple logic to solve the order, since elements spawn together in 3s
-            towerOrder[0] = allTowers[0].element;
-            towerOrder[1] = allTowers[3].element;
-            towerOrder[2] = allTowers[6].element;
+                towerOrder.Clear();
+                return;
+            }
+            towerOrder.Add(elementAtStart);
         }
+        Update();
     }
 
     public override void OnActorEAnim(Actor actor, uint state)
     {
-        if (actor.OID is ((uint)OID.IceTower) or ((uint)OID.FireTower) or ((uint)OID.ThunderTower))
+        if (actor.OID is not ((uint)OID.IceTower) and not ((uint)OID.FireTower) and not ((uint)OID.ThunderTower))
+            return;
+        if (state == (uint)Animations.TowerGlow)
         {
-            if (state == (uint)Animations.TowerGlow)
-            {
-                Towers.Add(new(actor.Position, 3.0f, 2, 2, actorID: actor.InstanceID));
-
-                if (Towers.Count >= 4)
-                {
-                    Towers.Sort(delegate (Tower a, Tower b)
-                    {
-                        var north = Angle.AnglesCardinals[2];
-                        var xAngle = (a.Position - Arena.Center).ToAngle();
-                        var yAngle = (b.Position - Arena.Center).ToAngle();
-
-                        var xDeg = xAngle.AlmostEqual(north, 0.01f) ? 180f : xAngle.Deg;
-                        var yDeg = yAngle.AlmostEqual(north, 0.01f) ? 180f : yAngle.Deg;
-
-                        return xDeg < yDeg ? 1 : -1;
-                    });
-                }
-            }
-
-            if (state == (uint)Animations.TowerExplosion)
+            var wave = numGlows / 4;
+            if (wave >= 3)
+                return;
+            if (waves.Count == wave)
+                waves.Add([]);
+            if (waves[wave].Contains(actor.InstanceID))
+                return;
+            waves[wave].Add(actor.InstanceID);
+            ++numGlows;
+            activeWaves.Add(wave);
+            Towers.Add(new(actor.Position, 3f, 2, 2, forbiddenSoakers: new BitMask(0xFF), actorID: actor.InstanceID));
+            Update();
+        }
+        else if (state == (uint)Animations.TowerExplosion)
+        {
+            // Remove the oldest activation of this actor, not a newly glowing tower.
+            var index = Towers.FindIndex(t => t.ActorID == actor.InstanceID);
+            if (index >= 0)
             {
                 ++NumCasts;
-                Towers.RemoveAll(p => p.ActorID == actor.InstanceID);
+                Towers.RemoveAt(index);
+                activeWaves.RemoveAt(index);
             }
         }
     }
@@ -513,115 +618,75 @@ sealed class Celestriad(BossModule module) : Components.GenericTowers(module)
     public override void OnStatusGain(Actor actor, ref ActorStatus status)
     {
         var slot = Raid.FindSlot(actor.InstanceID);
-        if (slot < 0)
-        {
+        if (slot < 0 || debuffs[slot] != Elements.NONE)
             return;
-        }
-
-        if (debuffs[slot] != Elements.NONE)
+        debuffs[slot] = status.ID switch
         {
-            return;
-        }
-
-        if (status.ID == (uint)SID.IceResistanceDownII)
-        {
-            debuffs[slot] = Elements.ICE;
-        }
-
-        if (status.ID == (uint)SID.FireResistanceDownII)
-        {
-            debuffs[slot] = Elements.FIRE;
-        }
-
-        if (status.ID == (uint)SID.LightningResistanceDownII)
-        {
-            debuffs[slot] = Elements.THUNDER;
-        }
-
-        // If all 6 players have debuffs, we know the final two are the non-debuff players
+            (uint)SID.IceResistanceDownII => Elements.ICE,
+            (uint)SID.FireResistanceDownII => Elements.FIRE,
+            (uint)SID.LightningResistanceDownII => Elements.THUNDER,
+            _ => Elements.NONE
+        };
         if (debuffs.Count(d => d != Elements.NONE) == 6)
         {
             for (var i = 0; i < debuffs.Length; ++i)
-            {
                 if (debuffs[i] == Elements.NONE)
-                {
                     debuffs[i] = Elements.NO_ELEMENT;
+        }
+        Update();
+    }
+
+    public override void Update()
+    {
+        if (towerOrder.Count != 3 || debuffs.Contains(Elements.NONE))
+            return;
+        for (var wave = 0; wave < waves.Count; ++wave)
+        {
+            if (assignedWaves.Contains(wave) || waves[wave].Count != 4)
+                continue;
+            // allTowers already follows clockwise order within every element group.
+            var lit = allTowers.Where(t => waves[wave].Contains(t.actor.InstanceID)).ToArray();
+            if (lit.Length != 4)
+                continue;
+            var groups = lit.GroupBy(t => t.element).ToArray();
+            if (groups.Length != 3 || groups.Count(g => g.Count() == 2) != 1)
+                continue;
+            var secondTower = groups.First(g => g.Count() == 2).Last().actor.InstanceID;
+            foreach (var tower in lit)
+            {
+                BitMask forbidden = default;
+                for (var slot = 0; slot < debuffs.Length; ++slot)
+                {
+                    var allowed = debuffs[slot] == Elements.NO_ELEMENT
+                        ? tower.actor.InstanceID == secondTower
+                        : tower.actor.InstanceID != secondTower && tower.element == towerOrder[(towerOrder.IndexOf(debuffs[slot]) + wave + 1) % 3];
+                    if (!allowed)
+                        forbidden.Set(slot);
                 }
+                assignments[(wave, tower.actor.InstanceID)] = forbidden;
+            }
+            assignedWaves.Add(wave);
+        }
+        for (var i = 0; i < Towers.Count; ++i)
+        {
+            var tower = Towers[i];
+            if (assignments.TryGetValue((activeWaves[i], tower.ActorID), out var forbidden))
+            {
+                tower.ForbiddenSoakers = forbidden;
+                Towers[i] = tower;
             }
         }
     }
 
-    // Used for setting the forbidden soakers to the towers:
-    // Example: towerOrder is ICE, FIRE, THUNDER
-    // So we know thunder will go to Ice -> Fire -> Thunder
-    // So we know fire will go to Thunder -> Ice -> Fire
-    // So we know ice will go to Fire -> Thunder -> Ice
-    // So every wave of towers is just +1 to their element, and they will end back at their original element
-    public override void Update()
+    public override void DrawArenaForeground(int pcSlot, Actor pc)
     {
-        if (towerOrder.Contains(Elements.NONE) || Towers.Count == 0)
-        {
+        base.DrawArenaForeground(pcSlot, pc);
+        if (pcSlot < 0 || pcSlot >= PartyState.MaxPartySize || activeWaves.Count == 0)
             return;
-        }
-
-        // Assign each tower to an element index
-        var towerElements = new Elements[Towers.Count];
+        var wave = activeWaves.Min();
         for (var i = 0; i < Towers.Count; ++i)
-        {
-            var index = allTowers.Find(t => t.actor.InstanceID == Towers[i].ActorID);
-            towerElements[i] = index == default ? Elements.NONE : index.element;
-        }
-
-        // Find the dupe element
-        var dupeElement = Elements.NONE;
-        for (var i = 0; i < towerElements.Length && dupeElement == Elements.NONE; ++i)
-        {
-            for (var k = i + 1; k < towerElements.Length; ++k)
-            {
-                if (towerElements[i] == towerElements[k])
-                {
-                    dupeElement = towerElements[i];
-                    break;
-                }
-            }
-        }
-        var dupeIndex = Array.LastIndexOf(towerElements, dupeElement);
-
-        // Set up the forbidden players for each tower
-        var set = NumCasts / 4;
-        for (var i = 0; i < Towers.Count; ++i)
-        {
-            var tower = Towers[i];
-            BitMask forbiddenPlayers = default;
-
-            for (var k = 0; k < debuffs.Length; ++k)
-            {
-                var playerDebuff = debuffs[k];
-                if (i == dupeIndex)
-                {
-                    if (playerDebuff != Elements.NO_ELEMENT)
-                    {
-                        forbiddenPlayers.Set(k);
-                    }
-                }
-                else
-                {
-                    if (playerDebuff == Elements.NO_ELEMENT)
-                    {
-                        forbiddenPlayers.Set(k);
-                        continue;
-                    }
-
-                    var targetElement = towerOrder[(towerOrder.IndexOf(playerDebuff) + set + 1) % 3];
-                    if (targetElement != towerElements[i])
-                    {
-                        forbiddenPlayers.Set(k);
-                    }
-                }
-            }
-            tower.ForbiddenSoakers = forbiddenPlayers;
-            Towers[i] = tower;
-        }
+            if (activeWaves[i] == wave && !Towers[i].ForbiddenSoakers[pcSlot])
+                Arena.ZoneCircleOutline(Towers[i].Position, 1f, Colors.Safe, 2f);
     }
 }
 
@@ -782,60 +847,58 @@ sealed class P5ForsakenGround(BossModule module) : Components.SimpleAOEs(module,
     }
 }
 
-sealed class P5ForsakenBait(DMU module) : Components.GenericBaitProximity(module)
+// Follow actual puddle telegraphs; do not predict which player is selected.
+sealed class P5ForsakenBait(DMU module) : Components.GenericAOEs(module)
 {
-    private bool active = true;
-    private readonly Actor boss = module.KefkaP5()!;
+    private readonly List<AOEInstance> aoes = [];
+    private readonly HashSet<(ulong caster, DateTime finish)> seenCasts = [];
+    private int step;
+    private bool started;
+    private bool finished;
 
     public override void OnCastStarted(Actor caster, ActorCastInfo spell)
     {
-        if (spell.Action.ID == (uint)AID.ForsakenAOEBait)
-        {
-            active = true;
-        }
+        if (spell.Action.ID == (uint)AID.ForsakenCast)
+            started = true;
+        if (spell.Action.ID != (uint)AID.ForsakenAOEBait || !seenCasts.Add((caster.InstanceID, Module.CastFinishAt(spell))))
+            return;
+        started = true;
+        step = Math.Min(step + 1, 4);
+        aoes.Add(new(new AOEShapeCircle(8f), caster.Position, activation: Module.CastFinishAt(spell), actorID: caster.InstanceID));
     }
 
     public override void OnEventCast(Actor caster, ActorCastEvent spell)
     {
         if (spell.Action.ID == (uint)AID.ForsakenAOEBait)
         {
-            CurrentBaits.Clear();
-            NumCasts++;
+            var index = aoes.FindIndex(a => a.ActorID == caster.InstanceID);
+            if (index >= 0)
+            {
+                aoes.RemoveAt(index);
+                ++NumCasts;
+            }
         }
+        else if (spell.Action.ID == (uint)AID.ForsakenBonds && step == 4)
+            finished = true;
     }
 
-    // Says baited onto an inter/card closest to a random player
-    public override void Update()
+    public override ReadOnlySpan<AOEInstance> ActiveAOEs(int slot, Actor actor) => CollectionsMarshal.AsSpan(aoes);
+
+    public override void DrawArenaForeground(int pcSlot, Actor pc)
     {
-        if (active)
-        {
-            OnlyShowOutlines = false;
+        base.DrawArenaForeground(pcSlot, pc);
+        if (finished)
             return;
-        }
-
-        CurrentBaits.Clear();
-        OnlyShowOutlines = true;
-
-        var target = Raid.WithoutSlot().SortedByRange(boss.Position).Closest(boss.Position);
-        if (target == null)
-        {
+        // The existing timeline activates this component during the last auto attack.
+        var forces = Module.FindComponent<FellForces>();
+        if (!started && forces != null && forces.active && forces.NumCasts < forces.expectedCasts)
             return;
-        }
-
-        CurrentBaits.Add(new(target.Position, new AOEShapeCircle(8.0f)));
+        // SW -> NW -> NE -> SE -> SW; every point is 11 yalms from the center.
+        Arena.ZoneCircleOutline(KoreanP5Positions.At(Arena.Center, 225f + step * 90f, 11f), 1f, Colors.Safe, 2f);
     }
 }
 
 sealed class P5ForsakenStack(BossModule module) : Components.StackTogether(module, (uint)IconID.StackShare, 5.0f, 6.0f);
 
-/*
-    ForsakenAOEBait = 47928, // Helper->self, 5.0s cast, range 8 circle - Bait puddle
-    ForsakenBonds = 47929, // Helper->players, no cast, range 6 circle - Stack
- */
 
-// TODO
-//  6. Make Forsaken
-//  7. Fix timeline upon entering P5
-
-// TODO add safe spots to MaddeningOrchestra, add config option of 1-6 (somehow don't include tanks or set them to 0), 0 players will not be included
-//  Lowest number is left, highest number is right, last number remaining is middle
+// TODO: refine the phase-entry timing in DMUStates.
