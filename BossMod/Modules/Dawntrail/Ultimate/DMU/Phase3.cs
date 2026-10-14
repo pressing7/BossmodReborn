@@ -276,6 +276,7 @@ sealed class WaterCrystal(BossModule module) : Components.GenericBaitProximity(m
 
     public override void DrawArenaForeground(int pcSlot, Actor pc)
     {
+        base.DrawArenaForeground(pcSlot, pc);
         if (pcSlot < 0 || pcSlot >= 8 || partyConfig.SlotsPerAssignment(Raid).Length == 0 || crystals == null || crystals.crystalsStored.Count != 3)
             return;
         var role = partyConfig[Raid.Members[pcSlot].ContentId];
@@ -348,6 +349,7 @@ sealed class FireCrystal(BossModule module) : Components.GenericBaitProximity(mo
 
     public override void DrawArenaForeground(int pcSlot, Actor pc)
     {
+        base.DrawArenaForeground(pcSlot, pc);
         if (pcSlot < 0 || pcSlot >= 8 || partyConfig.SlotsPerAssignment(Raid).Length == 0 || crystals == null || crystals.crystalsStored.Count != 3)
             return;
         var role = partyConfig[Raid.Members[pcSlot].ContentId];
